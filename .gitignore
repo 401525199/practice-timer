@@ -1,0 +1,33 @@
+# Python and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Packaging output (uploaded separately as release assets)
+build/
+dist/
+release/
+*.spec
+
+# Personal session data, exports, and local configuration
+session.json
+session.tmp
+*.log
+练习记录_*.csv
+.env
+.env.*
+
+# Editor and operating-system files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local QA output
+tmp/
+qa/
