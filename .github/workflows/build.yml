@@ -43,7 +43,7 @@ jobs:
         with:
           name: PracticeTimer-windows-x64
           path: |
-            dist/PracticeTimer-v1.0.0-windows-x64.zip
+            dist/PracticeTimer-v*-windows-x64.zip
             dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30

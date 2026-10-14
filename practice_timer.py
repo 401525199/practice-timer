@@ -16,6 +16,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from timer_core import TimerModel
+from practice_controller import PracticeController
 import taskbar_win
 
 
@@ -112,9 +113,41 @@ class RoundedButton(tk.Canvas):
 
 
 class TimerApp:
+    @property
+    def model(self):
+        return self.controller.active_model
+
+    @model.setter
+    def model(self, value):
+        if self.controller.practice_mode == "set":
+            self.controller.set_model = value
+        else:
+            self.controller.question_model = value
+
+    @property
+    def countdown(self):
+        return self.controller.countdown
+
+    @countdown.setter
+    def countdown(self, value):
+        self.controller.countdown = value
+
+    @property
+    def is_set_mode(self):
+        return self.controller.practice_mode == "set"
+
+    @property
+    def alerted_question(self):
+        return self.alerted_items[self.controller.practice_mode]
+
+    @alerted_question.setter
+    def alerted_question(self, value):
+        self.alerted_items[self.controller.practice_mode] = value
+
     def __init__(self, root):
         self.root = root
-        self.model = TimerModel(target_seconds=90)
+        self.controller = PracticeController()
+        self.alerted_items = {"question": None, "set": None}
         self.topmost = True
         self.sound = False
         self.countdown = False
@@ -161,8 +194,19 @@ class TimerApp:
         self.pin_button = self.link_button(header, "置顶 ✓", self.toggle_pin)
         self.pin_button.pack(side="right")
 
+        self.practice_tabs = tk.Frame(self.content, bg=BG)
+        self.practice_tabs.pack(fill="x", pady=(14, 0))
+        self.practice_buttons = {}
+        for side, mode, title in (("left", "question", "单题练习"), ("right", "set", "整套练习")):
+            button = RoundedButton(self.practice_tabs, title,
+                                   lambda selected=mode: self.select_practice_mode(selected),
+                                   width=151, height=32, foreground=MUTED,
+                                   keyboard_guard=self.key_guard)
+            button.pack(side=side)
+            self.practice_buttons[mode] = button
+
         self.question_row = tk.Frame(self.content, bg=BG)
-        self.question_row.pack(fill="x", pady=(18, 0))
+        self.question_row.pack(fill="x", pady=(12, 0))
         self.question_label = tk.Label(self.question_row, bg=BG, fg=TEXT,
                                        font=("Microsoft YaHei UI", 11, "bold"))
         self.question_label.pack(side="left")
@@ -214,6 +258,7 @@ class TimerApp:
         self.compact_footer = tk.Frame(self.content, bg=BG)
         self.link_button(self.compact_footer, "展开 ↙", self.toggle_compact).pack(side="right")
         self.link_button(self.compact_footer, "记录", self.show_history).pack(side="left")
+        self.link_button(self.compact_footer, "设置", self.show_settings).pack(side="left", padx=(16, 0))
 
         self.apply_size(initial=True)
         self.configure_taskbar()
@@ -283,10 +328,9 @@ class TimerApp:
     def load_state(self):
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-            self.model.restore(state["session"])
+            self.controller.restore(state)
             self.topmost = bool(state.get("topmost", True))
             self.sound = bool(state.get("sound", False))
-            self.countdown = bool(state.get("countdown", False))
             self.compact = bool(state.get("compact", False))
             position = state.get("position")
             if isinstance(position, list) and len(position) == 2 and all(isinstance(v, int) for v in position):
@@ -297,9 +341,10 @@ class TimerApp:
             logging.exception("Could not restore saved session")
 
     def save_state(self):
-        state = {"session": self.model.to_dict(), "topmost": self.topmost,
-                 "sound": self.sound, "countdown": self.countdown, "compact": self.compact,
-                 "position": [self.root.winfo_x(), self.root.winfo_y()]}
+        state = self.controller.to_dict()
+        state.update({"topmost": self.topmost, "sound": self.sound,
+                      "countdown": self.controller.question_countdown, "compact": self.compact,
+                      "position": [self.root.winfo_x(), self.root.winfo_y()]})
         try:
             temporary = STATE_FILE.with_suffix(".tmp")
             temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -309,17 +354,20 @@ class TimerApp:
         self.last_save = time.monotonic()
 
     def apply_size(self, initial=False):
-        width, height = (310, 303) if self.compact else (360, 462)
+        width, height = (310, 345) if self.compact else (360, 505)
         if self.compact:
             self.stats_frame.pack_forget()
             self.footer.pack_forget()
             self.shortcut_label.pack_forget()
             self.compact_footer.pack(fill="x", pady=(10, 0))
             self.actions.pack_configure(pady=(14, 0))
-            self.question_row.pack_configure(pady=(10, 0))
+            self.question_row.pack_configure(pady=(8, 0))
             self.time_label.configure(font=("Consolas", 43, "bold"))
             for button in (self.start_button, self.next_button):
                 button.configure(width=126, height=40)
+                button.redraw()
+            for button in self.practice_buttons.values():
+                button.configure(width=126)
                 button.redraw()
         else:
             self.compact_footer.pack_forget()
@@ -327,10 +375,13 @@ class TimerApp:
             self.footer.pack(fill="x", pady=(15, 0))
             self.shortcut_label.pack(pady=(10, 0))
             self.actions.pack_configure(pady=(19, 0))
-            self.question_row.pack_configure(pady=(18, 0))
+            self.question_row.pack_configure(pady=(12, 0))
             self.time_label.configure(font=("Consolas", 53, "bold"))
             for button in (self.start_button, self.next_button):
                 button.configure(width=151, height=43)
+                button.redraw()
+            for button in self.practice_buttons.values():
+                button.configure(width=151)
                 button.redraw()
         if initial:
             if self.saved_position:
@@ -353,25 +404,37 @@ class TimerApp:
             displayed = ("+" + format_time(elapsed-target)) if overtime else format_time(target-elapsed, round_up=True)
         else:
             displayed = format_time(elapsed)
-        self.time_label.configure(text=displayed, fg=color)
-        self.question_label.configure(text=f"第 {state.question_number:02d} 题")
+        base_size = 43 if self.compact else 53
+        font_size = min(base_size, int(base_size*7/max(7, len(displayed))))
+        self.time_label.configure(text=displayed, fg=color, font=("Consolas", font_size, "bold"))
+        unit = "套" if self.is_set_mode else "题"
+        self.question_label.configure(text=f"第 {state.question_number:02d} {unit}")
         mode = "计时中" if state.running else ("已暂停" if elapsed else "准备开始")
         if overtime:
             status = f"{mode}  ·  超时 {format_time(elapsed-target)}"
         else:
-            status = f"{mode}  ·  目标 {format_time(target)}"
+            target_label = "总时长" if self.is_set_mode else "目标"
+            status = f"{mode}  ·  {target_label} {format_time(target)}"
         self.status_label.configure(text=status, fg=RED if overtime else MUTED)
         self.mode_button.configure(text="倒计时 ▾" if self.countdown else "正计时 ▾")
         self.pin_button.configure(text="置顶 ✓" if self.topmost else "置顶", fg=MINT if self.topmost else MUTED)
         self.start_button.set_text("暂停  Ⅱ" if state.running else ("继续  ▶" if elapsed else "开始  ▶"))
         self.next_button.set_enabled(elapsed >= 0.05)
+        self.next_button.set_text("完成本套  ✓" if self.is_set_mode else "下一题  →")
+        self.shortcut_label.configure(text="空格：开始 / 暂停    ·    回车：" + ("完成本套" if self.is_set_mode else "下一题"))
+        for practice_mode, button in self.practice_buttons.items():
+            selected = practice_mode == self.controller.practice_mode
+            fill, foreground = ("#D9EEE7", MINT) if selected else (CARD, MUTED)
+            if (button.fill, button.foreground) != (fill, foreground):
+                button.fill, button.foreground = fill, foreground
+                button.redraw()
         self.progress.delete("all")
         width = self.progress.winfo_width()
         self.progress.create_rectangle(0, 0, width*min(1, elapsed/target), 4,
                                        fill=RED if overtime else MINT, outline="")
         records = self.model.completed_records
         average = sum(record.elapsed_seconds for record in records)/len(records) if records else 0
-        for label, value in zip(self.stat_labels, (f"{len(records)} 题", format_time(average),
+        for label, value in zip(self.stat_labels, (f"{len(records)} {unit}", format_time(average),
                                                   format_time(state.session_elapsed_seconds))):
             label.configure(text=value)
         if state.running and overtime and self.alerted_question != state.question_number:
@@ -390,7 +453,7 @@ class TimerApp:
         self.root.after(100, self.tick)
 
     def toggle(self):
-        self.model.toggle()
+        self.controller.toggle()
         self.update_view()
         self.save_state()
 
@@ -405,9 +468,8 @@ class TimerApp:
         return "break"
 
     def next_question(self):
-        if self.model.question_elapsed_seconds < 0.05:
+        if self.controller.finish_or_next() is None:
             return
-        self.model.next_question()
         self.alerted_question = None
         self.update_view()
         self.save_state()
@@ -416,10 +478,18 @@ class TimerApp:
         if self.dialog is not None:
             return
         if self.model.session_elapsed_seconds > 0 or self.model.completed_records:
-            if not messagebox.askyesno("重置练习", "清空本次计时和做题记录？\n需要保留时，可先在“记录”里导出。", parent=self.root):
+            scope = "整套" if self.is_set_mode else "单题"
+            if not messagebox.askyesno("重置练习", f"清空{scope}模式的计时和记录？\n需要保留时，可先在“记录”里导出。", parent=self.root):
                 return
-        self.model.reset()
+        self.controller.reset_active()
         self.alerted_question = None
+        self.update_view()
+        self.save_state()
+
+    def select_practice_mode(self, mode):
+        if self.dialog is not None or mode == self.controller.practice_mode:
+            return
+        self.controller.switch_mode(mode)
         self.update_view()
         self.save_state()
 
@@ -470,12 +540,14 @@ class TimerApp:
             self.root.focus_set()
 
     def show_settings(self):
-        dialog = self.new_dialog("计时设置", 330, 292)
+        whole_set = self.is_set_mode
+        maximum_minutes = 1440 if whole_set else 180
+        dialog = self.new_dialog("整套计时设置" if whole_set else "单题计时设置", 330, 352 if whole_set else 292)
         if dialog is None:
             return
         frame = tk.Frame(dialog, bg=BG)
         frame.pack(fill="both", expand=True, padx=24, pady=20)
-        tk.Label(frame, text="每题目标用时", bg=BG, fg=TEXT,
+        tk.Label(frame, text="整套目标时长" if whole_set else "每题目标用时", bg=BG, fg=TEXT,
                  font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
         tk.Label(frame, text="按你的练习节奏设置，达到目标后继续计时。", bg=BG, fg=MUTED,
                  font=("Microsoft YaHei UI", 8)).pack(anchor="w", pady=(7, 16))
@@ -484,6 +556,15 @@ class TimerApp:
         target = int(self.model.target_seconds)
         minutes = tk.StringVar(value=str(target//60))
         seconds = tk.StringVar(value=f"{target%60:02d}")
+        if whole_set:
+            presets = tk.Frame(frame, bg=BG)
+            presets.pack(anchor="w", pady=(0, 14), before=entry_row)
+            for value in (132, 135):
+                def choose_preset(duration=value):
+                    minutes.set(str(duration))
+                    seconds.set("00")
+                RoundedButton(presets, f"{value} 分钟", choose_preset, width=134, height=33,
+                              keyboard_guard=self.key_guard).pack(side="left", padx=(0, 6))
         entry_options = dict(width=4, bg=CARD, fg=TEXT, insertbackground=TEXT,
                              selectbackground="#CCE8DE", selectforeground=TEXT,
                              relief="flat", justify="center", font=("Consolas", 20))
@@ -503,10 +584,10 @@ class TimerApp:
                 return "break"
             try:
                 minute, second = int(minutes.get()), int(seconds.get())
-                if minute < 0 or minute > 180 or second < 0 or second > 59 or not 1 <= minute*60+second <= 10800:
+                if minute < 0 or minute > maximum_minutes or second < 0 or second > 59 or not 1 <= minute*60+second <= maximum_minutes*60:
                     raise ValueError
             except ValueError:
-                error.configure(text="请输入 1 秒至 180 分钟；秒数为 0–59。")
+                error.configure(text=f"请输入 1 秒至 {maximum_minutes} 分钟；秒数为 0–59。")
                 return
             self.model.set_target(minute*60+second)
             self.sound = sound_var.get()
@@ -521,14 +602,16 @@ class TimerApp:
         minute_entry.select_range(0, "end")
 
     def show_history(self):
-        dialog = self.new_dialog("做题记录", 430, 410)
+        whole_set = self.is_set_mode
+        dialog = self.new_dialog("整套记录" if whole_set else "做题记录", 430, 410)
         if dialog is None:
             return
         frame = tk.Frame(dialog, bg=BG)
         frame.pack(fill="both", expand=True, padx=20, pady=18)
-        tk.Label(frame, text="本次练习记录", bg=BG, fg=TEXT,
+        tk.Label(frame, text="整套练习记录" if whole_set else "单题练习记录", bg=BG, fg=TEXT,
                  font=("Microsoft YaHei UI", 13, "bold")).pack(anchor="w")
-        tk.Label(frame, text="“下一题”会记录刚完成的题；当前题继续计时。", bg=BG, fg=MUTED,
+        history_hint = "点击“完成本套”后，保存用时并暂停。" if whole_set else "“下一题”会记录刚完成的题；当前题继续计时。"
+        tk.Label(frame, text=history_hint, bg=BG, fg=MUTED,
                  font=("Microsoft YaHei UI", 8)).pack(anchor="w", pady=(7, 12))
         style = ttk.Style(dialog)
         style.theme_use("clam")
@@ -542,7 +625,7 @@ class TimerApp:
         table_frame = tk.Frame(frame, bg=BG)
         table = ttk.Treeview(table_frame, columns=("question", "elapsed", "target", "result"),
                              show="headings", style="Timer.Treeview", selectmode="browse")
-        for name, title, width in (("question", "题号", 55), ("elapsed", "用时", 80),
+        for name, title, width in (("question", "套号" if whole_set else "题号", 55), ("elapsed", "用时", 90),
                                     ("target", "目标", 80), ("result", "状态", 75)):
             table.heading(name, text=title)
             table.column(name, width=width, anchor="center")
@@ -556,25 +639,29 @@ class TimerApp:
                                                format_time(record.target_seconds), "按时" if record.on_target else "超时"),
                          tags=() if record.on_target else ("overtime",))
         if not self.model.completed_records:
-            tk.Label(frame, text="完成一题后点“下一题”，记录会出现在这里。", bg=BG, fg=MUTED,
+            empty_hint = "完成一套后点“完成本套”，即可保存记录。" if whole_set else "完成一题后点“下一题”，记录会出现在这里。"
+            tk.Label(frame, text=empty_hint, bg=BG, fg=MUTED,
                      font=("Microsoft YaHei UI", 8)).pack(side="bottom", pady=(8, 0))
         RoundedButton(frame, "导出 CSV", self.export_history, width=385, height=39,
                       fill=MINT, foreground=BUTTON_TEXT, keyboard_guard=self.key_guard).pack(side="bottom", pady=(14, 0))
         table_frame.pack(fill="both", expand=True)
 
     def export_history(self):
+        whole_set = self.is_set_mode
         if not self.model.completed_records:
-            messagebox.showinfo("做题记录", "还没有完成的题目。完成一题后点“下一题”即可记录。", parent=self.dialog)
+            hint = "还没有完成的整套练习。点击“完成本套”即可记录。" if whole_set else "还没有完成的题目。完成一题后点“下一题”即可记录。"
+            messagebox.showinfo("练习记录", hint, parent=self.dialog)
             return
-        path = filedialog.asksaveasfilename(parent=self.dialog, title="导出做题记录",
+        prefix = "整套练习记录" if whole_set else "练习记录"
+        path = filedialog.asksaveasfilename(parent=self.dialog, title="导出练习记录",
                                            defaultextension=".csv", filetypes=[("CSV 文件", "*.csv")],
-                                           initialfile=f"练习记录_{time.strftime('%Y%m%d_%H%M')}.csv")
+                                           initialfile=f"{prefix}_{time.strftime('%Y%m%d_%H%M')}.csv")
         if not path:
             return
         try:
             with open(path, "w", newline="", encoding="utf-8-sig") as handle:
                 writer = csv.writer(handle)
-                writer.writerow(["题号", "用时（秒）", "用时", "目标（秒）", "状态"])
+                writer.writerow(["套号" if whole_set else "题号", "用时（秒）", "用时", "目标（秒）", "状态"])
                 for record in self.model.completed_records:
                     writer.writerow([record.question_number, round(record.elapsed_seconds, 2),
                                      format_record_time(record.elapsed_seconds), record.target_seconds,
@@ -585,7 +672,8 @@ class TimerApp:
         messagebox.showinfo("已导出", "做题记录已保存。", parent=self.dialog)
 
     def close(self):
-        self.model.pause()
+        self.controller.question_model.pause()
+        self.controller.set_model.pause()
         self.save_state()
         if self.taskbar_hwnd is not None:
             try:

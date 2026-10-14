@@ -18,6 +18,7 @@ session.json
 session.tmp
 *.log
 练习记录_*.csv
+整套练习记录_*.csv
 .env
 .env.*
 

@@ -15,7 +15,7 @@ def main():
     if sys.maxsize < 2**32:
         raise SystemExit("Please use 64-bit Python to build the x64 release.")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--version", default="1.0.0")
+    parser.add_argument("--version", default="1.1.0")
     args = parser.parse_args()
     if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
         raise SystemExit("Version must have the form 1.0.0.")
